@@ -7,7 +7,7 @@
 Modifications:  
 **Author:** UnBonWhisky / Flavien Fouqueray  
 **LinkedIn:** [Flavien Fouqueray](https://www.linkedin.com/in/ffouqueray/)  
-**Date Last Edition:** 2025-03-06
+**Date Last Edition:** 2025-09-16
 
 ## Description
 
