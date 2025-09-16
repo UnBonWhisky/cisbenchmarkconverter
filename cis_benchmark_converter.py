@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python3
 # -*- coding: utf-8 -*-
 """
 File : cis_benchmark_converter.py
@@ -17,21 +17,19 @@ python cis_benchmark_converter.py -i path/to/input_file.pdf -o path/to/output_fi
 Arguments :
 -i, --input   : Path to the input CIS Benchmark PDF file.
 -o, --output  : Path to the output file (defaults to the input file name with .csv or .xlsx extension).
--f, --format  : Output file format (csv or excel, default is excel).
 
 Dependencies :
 - pdfplumber : for text extraction from PDF files.
-- openpyxl   : for creating and handling Excel files.
 - colorama   : for colored status messages in the terminal.
 
 Installing dependencies :
-pip install pdfplumber openpyxl colorama
+pip install pdfplumber colorama
 
 Changelog :
-- 2024-11-06 : Initial version for converting CIS Benchmarks from PDF to CSV or Excel.
+- 2025-03-06 : Initial version for converting CIS Benchmarks from PDF to CSV.
 
 References and Resources :
-- CIS Benchmarks : https://www.cisecurity.org/cis-benchmarks/
+- CIS Benchmarks : https://downloads.cisecurity.org/#/
 - pdfplumber documentation : https://pdfplumber.readthedocs.io/
 - openpyxl documentation : https://openpyxl.readthedocs.io/
 - colorama documentation : https://pypi.org/project/colorama/
@@ -45,11 +43,6 @@ import csv
 import re
 import argparse
 import pdfplumber
-from openpyxl.styles import PatternFill, Font
-from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.formatting.rule import FormulaRule
-from openpyxl import Workbook
 import os
 from colorama import Fore, Style, init
 
@@ -60,7 +53,10 @@ init(autoreset=True)
 recommendation_pattern = re.compile(r'^\s*(\d+(?:\.\d+)+)\s+(.+)')  # Matches numbers like 1.1.1, 2.2.2.2, etc.
 remove_pattern = re.compile(r'Page\s\d{1,4}|•')
 remove_pattern2 = re.compile(r'\d{1,4}\s*\|\s*P\s*a\s*ge')
-title_pattern = re.compile(r'^([1-9]\d{0,1}\.\d+(?:\.\d+)*)\s*(\(L\d+\))?\s*(.*)')
+#title_pattern = re.compile(r'^([1-9]\d{0,1}\.\d+(?:\.\d+)*)\s*(\(L\d+\))?\s*(.*)')
+title_pattern = re.compile(r'^([1-9]\d{0,2}(?:\.\d+){1,7})\s{1,}(\(L\d+\))?\s*(.*)')
+category_pattern = re.compile(r'^(\d+)\s+([A-Za-z][A-Za-z\s\-\'\,\(\)\/]+)[\s\.]+\d+\b')
+category_in_file_pattern = re.compile(r'^(\d+)\s+([\w+ *]+)[ \n]*\b')
 
 # Pattern to remove page numbers (e.g., "Page 123")
 page_number_pattern = re.compile(r'\bPage\s+\d+\b', re.IGNORECASE)
@@ -90,8 +86,11 @@ sections = [
     'Remediation:',
     'Default Value:',
     'References:',
-    'Additional Information:'
+    #'Additional Information:'
 ]
+
+categories = {}
+recommendation_page = None
 
 def extract_title_and_version(input_file):
     with pdfplumber.open(input_file) as pdf:
@@ -117,83 +116,65 @@ def generate_unique_filename(base_name, extension):
         counter += 1
     return file_name
 
-def write_output(recommendations, output_file, output_format, title, version):
-    log_info(f"Writing output to {output_file} in {output_format.upper()} format...")
+def write_output(recommendations, output_file, input_file):
+    log_info(f"Writing output to {output_file}...")
+    
+    headers = [
+        'Category',
+        'Subcategory', 
+        'Number',
+        'Title'
+    ] + [sec[:-1] for sec in sections if sec != 'CIS Controls:']
+    
+    with open(output_file, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file, delimiter=',')
+        writer.writerow(headers)  # Column headers
 
-    if output_format == 'csv':
-        headers = ['Compliance Status', 'Number', 'Level', 'Title'] + [sec[:-1] for sec in sections if sec != 'CIS Controls:']
-        with open(output_file, mode='w', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file, delimiter='|')
-            writer.writerow([title if title else "CIS Benchmark Document"])
-            writer.writerow([version if version else ""])
-            writer.writerow([])  # Empty row for spacing
-            writer.writerow(headers)  # Column headers
-
-            for recommendation in recommendations:
-                recommendation['Compliance Status'] = 'To Review'
-                row = [recommendation.get(header, '') for header in headers]
-                writer.writerow(row)
-
-    else:
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Recommendations"
-        sheet["A1"] = title if title else "CIS Benchmark Document"
-        sheet["A1"].font = Font(size=14, bold=True)
-        sheet["A2"] = version if version else ""
-        sheet["A2"].font = Font(size=12, italic=True)
-
-        headers = ['Compliance Status', 'Number', 'Level', 'Title'] + [sec[:-1] for sec in sections if sec != 'CIS Controls:']
-        sheet.append([""] * len(headers))  # Empty row for spacing
-        sheet.append(headers)
-
-        for row_idx, recommendation in enumerate(recommendations, start=5):
-            recommendation['Compliance Status'] = 'To Review'
-            row = [recommendation.get(header, '') for header in headers]
-            sheet.append(row)
-
-        dv = DataValidation(type="list", formula1='"Compliant,Non-Compliant,To Review"', showDropDown=False)
-        sheet.add_data_validation(dv)
-        for row_idx in range(5, len(recommendations) + 5):
-            dv.add(sheet[f"A{row_idx}"])
-
-        compliant_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        non_compliant_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-        to_review_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        compliant_rule = FormulaRule(formula=['$A5="Compliant"'], fill=compliant_fill)
-        non_compliant_rule = FormulaRule(formula=['$A5="Non-Compliant"'], fill=non_compliant_fill)
-        to_review_rule = FormulaRule(formula=['$A5="To Review"'], fill=to_review_fill)
-        
-        sheet.conditional_formatting.add(f"A5:A{len(recommendations) + 5}", compliant_rule)
-        sheet.conditional_formatting.add(f"A5:A{len(recommendations) + 5}", non_compliant_rule)
-        sheet.conditional_formatting.add(f"A5:A{len(recommendations) + 5}", to_review_rule)
-
-        # Add table style
-        tab = Table(displayName="CISRecommendations", ref=f"A4:{chr(65+len(headers)-1)}{len(recommendations) + 4}")
-        style = TableStyleInfo(name="TableStyleMedium9", showFirstColumn=False, showLastColumn=False, showRowStripes=True, showColumnStripes=True)
-        tab.tableStyleInfo = style
-        sheet.add_table(tab)
-
-        # Set column widths
-        sheet.column_dimensions['A'].width = 10  # Compliance Status
-        sheet.column_dimensions['B'].width = 8  # Number (default width)
-        sheet.column_dimensions['C'].width = 8  # Level (default width)
-        sheet.column_dimensions['D'].width = 50  # Title
-        for col in range(5, 13):  # Columns E to L (Profile Applicability to References)
-            sheet.column_dimensions[chr(64 + col)].width = 10
-
-        workbook.save(output_file)
+        for recommendation in recommendations:
+            # Extract the actual recommendation data
+            rec_number = recommendation.get('Number', '')
+            rec_title = recommendation.get('Title', '')
+            
+            # Create row with proper mapping
+            row = [
+                '',  # Category - will be filled below
+                '',  # Subcategory - will be filled below  
+                rec_number,  # Number (e.g., "1.1.1")
+                rec_title   # Title
+            ]
+            
+            # Add section content to the row
+            for sec in sections:
+                if sec != 'CIS Controls:':
+                    section_key = sec[:-1]  # Remove the colon
+                    content = recommendation.get(section_key, '')
+                    # Clean the content
+                    content = content.replace('\n', ' ').replace('\t', ' ').replace('\r', ' ')
+                    content = content.replace('\uf0b7 ', '').replace('• ', '')
+                    row.append(content)
+            
+            # Get category and subcategory names
+            if rec_number:
+                parts = rec_number.split('.')
+                category_key = parts[0]  # e.g., "1" for "1.1.1"
+                category_name = categories.get(category_key, "Unknown")
+                
+                # For subcategory, check if there's a two-part number (e.g., "1.1" for "1.1.1")
+                if len(parts) >= 3:
+                    subcategory_key = '.'.join(parts[:-1])  # e.g., "1.1" for "1.1.1"
+                    subcategory_name = categories.get(subcategory_key, "No subcategory")
+                else:
+                    subcategory_name = "No subcategory"
+                
+                if category_name == "Unknown":
+                    print(f"Unknown category for recommendation {rec_number}: {rec_title}\nCategories : {categories}")
+                
+                row[0] = category_name
+                row[1] = subcategory_name
+            
+            writer.writerow(row)
 
     log_info(f"Finished writing {len(recommendations)} recommendations to {output_file}.")
-
-# Generate a unique filename if the file already exists
-def generate_unique_filename(base_name, extension):
-    counter = 1
-    file_name = f"{base_name}.{extension}"
-    while os.path.exists(file_name):
-        file_name = f"{base_name}({counter}).{extension}"
-        counter += 1
-    return file_name
 
 # Logging functions
 def log_info(message):
@@ -205,30 +186,125 @@ def log_warning(message):
 def log_debug(message):
     print(f"\n{Fore.BLUE}[DEBUG]{Style.RESET_ALL} {message}")
 
+def extract_categories(pdf, rec_page_num):
+    global categories
+    
+    for page in pdf.pages[:rec_page_num]:
+        page_text = page.extract_text()
+        lines = page_text.splitlines()
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # Original pattern for single-line categories
+            match = category_pattern.match(line)
+            if match:
+                number, name = match.groups()
+                categories[number] = name.strip()
+                i += 1
+                continue
+            
+            # Pattern for multi-line categories (like category 9)
+            multi_line_match = re.match(r'^(\d+)\s+([A-Za-z].*)$', line)
+            if multi_line_match:
+                number, name_start = multi_line_match.groups()
+                
+                # Look ahead to collect the full category name
+                full_name = name_start
+                j = i + 1
+                
+                # Continue reading lines until we find dots and a page number
+                while j < len(lines):
+                    next_line = lines[j].strip()
+                    
+                    # Check if this line contains the page number pattern (dots followed by number)
+                    if re.search(r'\.{3,}.*\d+\s*$', next_line):
+                        # Extract any remaining text before the dots
+                        text_before_dots = re.sub(r'\s*\.{3,}.*$', '', next_line).strip()
+                        if text_before_dots:
+                            full_name += " " + text_before_dots
+                        break
+                    
+                    # Check if next line starts with a number (new category/section)
+                    elif re.match(r'^\d+[\.\s]', next_line):
+                        j -= 1  # Step back since this is a new section
+                        break
+                    
+                    # Otherwise, append this line to the category name
+                    else:
+                        full_name += " " + next_line
+                    
+                    j += 1
+                
+                # Clean up the category name
+                full_name = re.sub(r'\s+', ' ', full_name.strip())
+                categories[number] = full_name
+                i = j + 1
+                continue
+            
+            # Enhanced pattern for subsections like "1.1 Password Policy"
+            subsection_match = re.match(r'^(\d+\.\d+)\s+([A-Za-z][^.]*?)(?:\s*\.+.*)?$', line)
+            if subsection_match:
+                number, name = subsection_match.groups()
+                name = re.sub(r'\s*\.+.*$', '', name.strip())
+                categories[number] = name
+            
+            # Pattern for deeper subsections like "18.6.10.1 Peer Name Resolution Protocol"
+            deep_subsection_match = re.match(r'^(\d+(?:\.\d+){2,})\s+([A-Za-z][^.]*?)(?:\s*\.+.*)?$', line)
+            if deep_subsection_match:
+                number, name = deep_subsection_match.groups()
+                name = re.sub(r'\s*\.+.*$', '', name.strip())
+                categories[number] = name
+            
+            i += 1
+    
+    if not categories:
+        log_warning("Categories not in the Table of Contents. Extracting from the PDF pages...")
+        
+        for page in pdf.pages[rec_page_num:]:
+            page_text = page.extract_text()
+            lines = page_text.splitlines()
+            
+            for line in lines:
+                match = category_in_file_pattern.match(line)
+                if match:
+                    number, name = match.groups()
+                    categories[number] = name.strip()
+    
+    # Debug: Print all found categories
+    log_debug(f"Total categories found: {len(categories)}")
+
 def read_pdf(input_file):
     log_info("Starting to read the PDF file...")
     text = []
     with pdfplumber.open(input_file) as pdf:
         total_pages = len(pdf.pages)
         extraction_started = False
+        global recommendation_page
         
         # Start reading from page 5 to skip the table of contents
         for page_number, page in enumerate(pdf.pages[5:], start=6):
             page_text = page.extract_text()
             
-            # Display progress
-            print(f"\r{Fore.GREEN}[INFO]{Style.RESET_ALL} Processing page {page_number}/{total_pages}...", end="", flush=True)
+            # Display progress 10 by 10
+            if page_number % 10 == 0 or page_number == total_pages:
+                print(f"\r{Fore.GREEN}[INFO]{Style.RESET_ALL} Processing page {page_number}/{total_pages}...", end="", flush=True)
             
             if not extraction_started:
                 if "Recommendations" in page_text and "....." not in page_text and "Recommendation Definitions" not in page_text:
                     extraction_started = True
-                    log_debug(f"Recommendations section detected. Starting extraction... (This may take a while)")
+                    recommendation_page = page_number
+                    log_debug("Recommendations section detected. Starting extraction... (This may take a while)")
             
             if extraction_started:
                 if "Appendix: Summary Table" in page_text or ("Checklist" in page_text and not any(title_pattern.match(line) for line in page_text.splitlines() if "Checklist" in line)):
                     log_debug("End of Recommendations section reached.")
                     break
                 text.append(page_text)
+            
+        log_debug("Extracting categories of all recommendations...")
+        extract_categories(pdf, recommendation_page)
 
     log_info("Completed reading the PDF file.")
     return '\n'.join(text)
@@ -267,6 +343,11 @@ def extract_recommendations(text):
         # Utilisation dans le contexte principal
         title_match = title_pattern.match(line)
         if title_match:
+            if line.startswith("2.16.840.1.101.3.4.1.2"):
+                print(current_recommendation)
+                print(lines[current_index])
+                print(lines[current_index - 1])
+                
             # Utilise find_profile_applicability pour vérifier dynamiquement
             if find_profile_applicability(lines, current_index):
                 # Sauvegarde la recommandation précédente
@@ -334,17 +415,13 @@ def main():
     parser = argparse.ArgumentParser(description="Extract and format recommendations from CIS Benchmark PDF")
     parser.add_argument("-i", "--input", required=True, help="Input PDF file")
     parser.add_argument("-o", "--output", help="Output file (default: same as input file name with .csv or .xlsx extension)")
-    parser.add_argument("-f", "--format", choices=['csv', 'excel'], default='excel', help="Output format (csv or excel)")
     args = parser.parse_args()
     input_file = args.input
-    output_format = args.format
     base_name = os.path.splitext(os.path.basename(input_file))[0]
-    extension = "csv" if output_format == "csv" else "xlsx"
-    output_file = args.output if args.output else generate_unique_filename(base_name, extension)
-    title, version = extract_title_and_version(input_file)
+    output_file = args.output if args.output else generate_unique_filename(base_name, "csv")
     text = read_pdf(input_file)
     recommendations = extract_recommendations(text)
-    write_output(recommendations, output_file, output_format, title, version)
+    write_output(recommendations, output_file, input_file)
 
 if __name__ == "__main__":
     main()
